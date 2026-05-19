@@ -147,8 +147,7 @@ pub async fn diff(
 
     let mut message_on_prompt = "".to_string();
 
-    for (prepared_commit, pull_request_task) in
-        zip(prepared_commits.iter_mut(), pull_request_tasks.into_iter())
+    for (prepared_commit, pull_request_task) in zip(prepared_commits.iter_mut(), pull_request_tasks)
     {
         if result.is_err() {
             break;
@@ -602,7 +601,7 @@ async fn diff_impl(
                 jj.create_derived_commit(
                     local_commit.parent_oid,
                     &format!(
-                        "[spr] {}\n\nCreated using jj-spr {}\n\n[skip ci]",
+                        "[spr] {}\n\n[skip ci]",
                         if pull_request.is_some() {
                             "changes introduced through rebase".to_string()
                         } else {
@@ -611,7 +610,6 @@ async fn diff_impl(
                                 config.master_ref.branch_name()
                             )
                         },
-                        env!("CARGO_PKG_VERSION"),
                     ),
                     new_base_tree,
                     &parents[..],
@@ -677,14 +675,10 @@ async fn diff_impl(
     } else {
         jj.create_derived_commit(
             local_commit.oid,
-            &format!(
-                "{}\n\nCreated using jj-spr {}",
-                github_commit_message
-                    .as_ref()
-                    .map(|s| &s[..])
-                    .unwrap_or("[jj-spr] initial version"),
-                env!("CARGO_PKG_VERSION"),
-            ),
+            github_commit_message
+                .as_ref()
+                .map(|s| &s[..])
+                .unwrap_or_else(|| title),
             new_head_tree,
             &pr_commit_parents[..],
         )?
@@ -719,7 +713,7 @@ async fn diff_impl(
             })
         };
     } else {
-        let mut cmd = tokio::process::Command::new("git");
+        let mut cmd = jj.git_command();
         cmd.arg("push")
             .arg("--atomic")
             .arg("--no-verify")
