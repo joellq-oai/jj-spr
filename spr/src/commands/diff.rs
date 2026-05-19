@@ -19,6 +19,45 @@ use crate::{
 use git2::Oid;
 use indoc::{formatdoc, indoc};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BaseDecision {
+    UseMain { retarget_pull_request: bool },
+    KeepExistingSyntheticBase,
+    CreateOrUpdateSyntheticBase,
+}
+
+fn select_base_decision(
+    has_existing_synthetic_base: bool,
+    directly_based_on_master: bool,
+    local_parent_tree_is_master_tree: bool,
+    cherry_pick: bool,
+    pr_base_tree: Oid,
+    new_base_tree: Oid,
+    needs_merging_master: bool,
+) -> BaseDecision {
+    if has_existing_synthetic_base && directly_based_on_master && local_parent_tree_is_master_tree {
+        return BaseDecision::UseMain {
+            retarget_pull_request: true,
+        };
+    }
+
+    if pr_base_tree == new_base_tree && !needs_merging_master {
+        if has_existing_synthetic_base {
+            BaseDecision::KeepExistingSyntheticBase
+        } else {
+            BaseDecision::UseMain {
+                retarget_pull_request: false,
+            }
+        }
+    } else if !has_existing_synthetic_base && (directly_based_on_master || cherry_pick) {
+        BaseDecision::UseMain {
+            retarget_pull_request: false,
+        }
+    } else {
+        BaseDecision::CreateOrUpdateSyntheticBase
+    }
+}
+
 #[derive(Debug, clap::Parser)]
 pub struct DiffOptions {
     /// Create/update pull requests for commits in range from base to revision
@@ -108,8 +147,7 @@ pub async fn diff(
 
     let mut message_on_prompt = "".to_string();
 
-    for (prepared_commit, pull_request_task) in
-        zip(prepared_commits.iter_mut(), pull_request_tasks.into_iter())
+    for (prepared_commit, pull_request_task) in zip(prepared_commits.iter_mut(), pull_request_tasks)
     {
         if result.is_err() {
             break;
@@ -412,44 +450,11 @@ async fn diff_impl(
         };
     let needs_merging_master = pr_master_base != master_base_oid;
 
-    // At this point we can check if we can exit early because no update to the
-    // existing Pull Request is necessary
-    if let Some(ref pull_request) = pull_request {
-        // So there is an existing Pull Request...
-        if !needs_merging_master && pr_head_tree == new_head_tree && pr_base_tree == new_base_tree {
-            // ...and it does not need a rebase, and the trees of both Pull
-            // Request branch and base are all the right ones.
-            output("✅", "No update necessary")?;
-
-            if opts.update_message {
-                // However, the user requested to update the commit message on
-                // GitHub
-
-                let mut pull_request_updates: PullRequestUpdate = Default::default();
-                pull_request_updates.update_message(pull_request, message);
-
-                if !pull_request_updates.is_empty() {
-                    if opts.dry_run {
-                        output(
-                            "  ",
-                            &format!("Would update PR #{} title/body", pull_request.number),
-                        )?;
-                    } else {
-                        // ...and there are actual changes to the message
-                        gh.update_pull_request(pull_request.number, pull_request_updates)
-                            .await?;
-                        output("✍", "Updated commit message on GitHub")?;
-                    }
-                }
-            }
-
-            return Ok(());
-        }
-    }
+    let master_base_tree = jj.get_tree_oid_for_commit(master_base_oid)?;
 
     // Check if there is a base branch on GitHub already. That's the case when
     // there is an existing Pull Request, and its base is not the master branch.
-    let base_branch = if let Some(ref pr) = pull_request {
+    let existing_base_branch = if let Some(ref pr) = pull_request {
         if pr.base.is_master_branch() {
             None
         } else {
@@ -458,6 +463,65 @@ async fn diff_impl(
     } else {
         None
     };
+
+    let base_decision = select_base_decision(
+        existing_base_branch.is_some(),
+        directly_based_on_master,
+        new_base_tree == master_base_tree,
+        opts.cherry_pick,
+        pr_base_tree,
+        new_base_tree,
+        needs_merging_master,
+    );
+
+    // At this point we can check if we can exit early because no update to the
+    // existing Pull Request is necessary
+    if let Some(ref pull_request) = pull_request {
+        // So there is an existing Pull Request...
+        if !needs_merging_master && pr_head_tree == new_head_tree && pr_base_tree == new_base_tree {
+            // ...and it does not need a rebase, and the trees of both Pull
+            // Request branch and base are all the right ones.
+            let mut pull_request_updates: PullRequestUpdate = Default::default();
+
+            if opts.update_message {
+                // However, the user requested to update the commit message on
+                // GitHub
+
+                pull_request_updates.update_message(pull_request, message);
+            }
+
+            if matches!(
+                base_decision,
+                BaseDecision::UseMain {
+                    retarget_pull_request: true
+                }
+            ) {
+                pull_request_updates.base = Some(config.master_ref.branch_name().to_string());
+            }
+
+            if pull_request_updates.is_empty() {
+                output("✅", "No update necessary")?;
+            } else if opts.dry_run {
+                let base = pull_request_updates
+                    .base
+                    .clone()
+                    .unwrap_or_else(|| pull_request.base.branch_name().to_string());
+                let is_stacked = base != config.master_ref.branch_name();
+                local_commit.dry_run_action = Some(crate::jj::DryRunAction::Update {
+                    pr_number: pull_request.number,
+                    base,
+                    head: pull_request_branch.branch_name().to_string(),
+                    is_stacked,
+                });
+            } else {
+                gh.update_pull_request(pull_request.number, pull_request_updates)
+                    .await?;
+                output("✍", "Updated Pull Request metadata on GitHub")?;
+            }
+
+            return Ok(());
+        }
+    }
 
     // We are going to construct `pr_base_parent: Option<Oid>`.
     // The value will be the commit we have to merge into the new Pull Request
@@ -499,60 +563,71 @@ async fn diff_impl(
     // commit is not directly based on master, we have to create this new PR
     // with a base branch, so that is case 3.
 
-    let (pr_base_parent, base_branch) = if pr_base_tree == new_base_tree && !needs_merging_master {
-        // Case 1
-        (None, base_branch)
-    } else if base_branch.is_none() && (directly_based_on_master || opts.cherry_pick) {
-        // Case 2
-        (Some(master_base_oid), None)
-    } else {
-        // Case 3
-
-        // We are constructing a base branch commit.
-        // One parent of the new base branch commit will be the current base
-        // commit, that could be either the top commit of an existing base
-        // branch, or a commit on master.
-        let mut parents = vec![pr_base_oid];
-
-        // If we need to rebase on master, make the master commit also a
-        // parent (except if the first parent is that same commit, we don't
-        // want duplicates in `parents`).
-        if needs_merging_master && pr_base_oid != master_base_oid {
-            parents.push(master_base_oid);
+    let (pr_base_parent, base_branch) = match base_decision {
+        BaseDecision::UseMain { .. } => {
+            if pr_base_tree == new_base_tree && !needs_merging_master {
+                // Case 1
+                (None, None)
+            } else {
+                // Case 2
+                (Some(master_base_oid), None)
+            }
         }
+        BaseDecision::KeepExistingSyntheticBase => {
+            // Case 1, but the existing GitHub base remains necessary because
+            // the local commit is still stacked on a non-main parent.
+            (None, existing_base_branch)
+        }
+        BaseDecision::CreateOrUpdateSyntheticBase => {
+            // Case 3
 
-        let new_base_branch_commit = if opts.dry_run {
-            // Use a placeholder OID — this won't be pushed
-            pr_base_oid
-        } else {
-            jj.create_derived_commit(
-                local_commit.parent_oid,
-                &format!(
-                    "[spr] {}\n\nCreated using jj-spr {}\n\n[skip ci]",
-                    if pull_request.is_some() {
-                        "changes introduced through rebase".to_string()
-                    } else {
-                        format!(
-                            "changes to {} this commit is based on",
-                            config.master_ref.branch_name()
-                        )
-                    },
-                    env!("CARGO_PKG_VERSION"),
-                ),
-                new_base_tree,
-                &parents[..],
-            )?
-        };
+            // We are constructing a base branch commit.
+            // One parent of the new base branch commit will be the current base
+            // commit, that could be either the top commit of an existing base
+            // branch, or a commit on master.
+            let mut parents = vec![pr_base_oid];
 
-        // If `base_branch` is `None` (which means a base branch does not exist
-        // yet), then make a `GitHubBranch` with a new name for a base branch
-        let base_branch = if let Some(base_branch) = base_branch {
-            base_branch
-        } else {
-            config.new_github_branch(&config.get_base_branch_name(&jj.get_all_ref_names()?, title))
-        };
+            // If we need to rebase on master, make the master commit also a
+            // parent (except if the first parent is that same commit, we don't
+            // want duplicates in `parents`).
+            if needs_merging_master && pr_base_oid != master_base_oid {
+                parents.push(master_base_oid);
+            }
 
-        (Some(new_base_branch_commit), Some(base_branch))
+            let new_base_branch_commit = if opts.dry_run {
+                // Use a placeholder OID — this won't be pushed
+                pr_base_oid
+            } else {
+                jj.create_derived_commit(
+                    local_commit.parent_oid,
+                    &format!(
+                        "[spr] {}\n\n[skip ci]",
+                        if pull_request.is_some() {
+                            "changes introduced through rebase".to_string()
+                        } else {
+                            format!(
+                                "changes to {} this commit is based on",
+                                config.master_ref.branch_name()
+                            )
+                        },
+                    ),
+                    new_base_tree,
+                    &parents[..],
+                )?
+            };
+
+            // If `base_branch` is `None` (which means a base branch does not exist
+            // yet), then make a `GitHubBranch` with a new name for a base branch
+            let base_branch = if let Some(base_branch) = existing_base_branch {
+                base_branch
+            } else {
+                config.new_github_branch(
+                    &config.get_base_branch_name(&jj.get_all_ref_names()?, title),
+                )
+            };
+
+            (Some(new_base_branch_commit), Some(base_branch))
+        }
     };
 
     let mut github_commit_message = opts.message.clone();
@@ -600,14 +675,10 @@ async fn diff_impl(
     } else {
         jj.create_derived_commit(
             local_commit.oid,
-            &format!(
-                "{}\n\nCreated using jj-spr {}",
-                github_commit_message
-                    .as_ref()
-                    .map(|s| &s[..])
-                    .unwrap_or("[jj-spr] initial version"),
-                env!("CARGO_PKG_VERSION"),
-            ),
+            github_commit_message
+                .as_ref()
+                .map(|s| &s[..])
+                .unwrap_or_else(|| title),
             new_head_tree,
             &pr_commit_parents[..],
         )?
@@ -642,7 +713,7 @@ async fn diff_impl(
             })
         };
     } else {
-        let mut cmd = tokio::process::Command::new("git");
+        let mut cmd = jj.git_command();
         cmd.arg("push")
             .arg("--atomic")
             .arg("--no-verify")
@@ -708,6 +779,10 @@ async fn diff_impl(
                 run_command(&mut cmd)
                     .await
                     .reword("git push failed".to_string())?;
+
+                if !pull_request.base.is_master_branch() {
+                    pull_request_updates.base = Some(config.master_ref.branch_name().to_string());
+                }
             }
 
             if !pull_request_updates.is_empty() {
@@ -990,6 +1065,68 @@ mod tests {
 
         assert!(opts.dry_run);
         assert!(!opts.all);
+    }
+
+    fn test_oid(byte: u8) -> Oid {
+        Oid::from_bytes(&[byte; 20]).unwrap()
+    }
+
+    #[test]
+    fn test_base_decision_retargets_stale_synthetic_base_to_main() {
+        let main_tree = test_oid(1);
+
+        assert_eq!(
+            select_base_decision(true, true, true, false, main_tree, main_tree, false,),
+            BaseDecision::UseMain {
+                retarget_pull_request: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_base_decision_retargets_stale_synthetic_base_with_head_update() {
+        assert_eq!(
+            select_base_decision(true, true, true, false, test_oid(1), test_oid(2), true,),
+            BaseDecision::UseMain {
+                retarget_pull_request: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_base_decision_keeps_existing_synthetic_base_for_dependent_stack() {
+        let synthetic_tree = test_oid(1);
+
+        assert_eq!(
+            select_base_decision(
+                true,
+                false,
+                false,
+                false,
+                synthetic_tree,
+                synthetic_tree,
+                false,
+            ),
+            BaseDecision::KeepExistingSyntheticBase
+        );
+    }
+
+    #[test]
+    fn test_base_decision_updates_synthetic_base_for_changed_dependent_stack() {
+        assert_eq!(
+            select_base_decision(true, false, false, false, test_oid(1), test_oid(2), false,),
+            BaseDecision::CreateOrUpdateSyntheticBase
+        );
+    }
+
+    #[test]
+    fn test_base_decision_preserves_cherry_pick_main_behavior() {
+        assert_eq!(
+            select_base_decision(false, false, true, true, test_oid(1), test_oid(2), false,),
+            BaseDecision::UseMain {
+                retarget_pull_request: false,
+            }
+        );
     }
 
     // Integration tests would require more complex setup with actual Git repositories
