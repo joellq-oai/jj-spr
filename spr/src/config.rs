@@ -53,21 +53,22 @@ impl Config {
             return None;
         }
 
-        let regex = lazy_regex::regex!(r#"^\s*#?\s*(\d+)\s*$"#);
-        let m = regex.captures(text);
-        if let Some(caps) = m {
-            return Some(caps.get(1).unwrap().as_str().parse().unwrap());
-        }
-
-        let regex = lazy_regex::regex!(
+        let numeric_ref_regex = lazy_regex::regex!(r#"^\s*#?\s*(\d+)\s*$"#);
+        let pull_request_url_regex = lazy_regex::regex!(
             r#"^\s*https?://github.com/([\w\-\.]+)/([\w\-\.]+)/pull/(\d+)([/?#].*)?\s*$"#
         );
-        let m = regex.captures(text);
-        if let Some(caps) = m
-            && self.owner == caps.get(1).unwrap().as_str()
-            && self.repo == caps.get(2).unwrap().as_str()
-        {
-            return Some(caps.get(3).unwrap().as_str().parse().unwrap());
+
+        for candidate in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            if let Some(caps) = numeric_ref_regex.captures(candidate) {
+                return Some(caps.get(1).unwrap().as_str().parse().unwrap());
+            }
+
+            if let Some(caps) = pull_request_url_regex.captures(candidate)
+                && self.owner == caps.get(1).unwrap().as_str()
+                && self.repo == caps.get(2).unwrap().as_str()
+            {
+                return Some(caps.get(3).unwrap().as_str().parse().unwrap());
+            }
         }
 
         None
@@ -398,6 +399,18 @@ mod tests {
         );
         assert_eq!(
             gh.parse_pull_request_field("https://github.com/acme/codez/pull/123#abc"),
+            Some(123)
+        );
+    }
+
+    #[test]
+    fn test_parse_pull_request_field_with_trailing_trailer() {
+        let gh = config_factory();
+
+        assert_eq!(
+            gh.parse_pull_request_field(
+                "https://github.com/acme/codez/pull/123\nCo-authored-by: Codex <noreply@example.com>"
+            ),
             Some(123)
         );
     }

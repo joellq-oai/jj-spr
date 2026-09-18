@@ -36,7 +36,7 @@ Jujutsu encourages amending changes. GitHub's review UI breaks with force pushes
 ```bash
 git clone https://github.com/LucioFranco/jj-spr.git
 cd jj-spr
-cargo install --path spr
+cargo install --locked --path spr
 ```
 
 This installs the `jj-spr` binary to your `~/.cargo/bin` directory.
@@ -152,6 +152,22 @@ jj spr land --cherry-pick -r <id>  # Land in any order
 jj spr diff -r <change-id>     # Update specific change
 jj spr diff -r main..@         # Update range of changes
 ```
+
+### Git push hooks
+
+`diff`, `land`, `close`, and `cleanup` now run Git pre-push hooks by default,
+including when deleting remote branches. Previously, SPR always skipped them.
+To explicitly skip hooks for one invocation, pass `--no-verify`, for example:
+
+```bash
+jj spr diff -r <revision> --no-verify
+```
+
+Hooks receive the refs and commit IDs being pushed. Hooks that inspect the
+working tree may check a different revision from the one selected with `-r`.
+Keep running revision-aware checks such as `jj pre-checks <revision>` where
+configured. A rejected PR push stops publication; branch deletion remains
+best-effort cleanup after a successful merge or closure.
 
 ## Stacked Pull Requests
 

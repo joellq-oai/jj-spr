@@ -274,6 +274,11 @@ Before landing:
    jj spr diff --all  # Updates PR #124 to be based on main instead of PR #123
    ```
 
+   If the child change has been rebased directly onto `main@origin`, `jj spr diff`
+   retargets the existing child PR back to `main` instead of keeping the old
+   synthetic base branch. Changes that are still locally based on an unmerged
+   parent continue to use synthetic base branches.
+
 **After landing:**
 ```
 ○  kmkuslkw  Add user profile endpoints (PR #124, now based on main)
