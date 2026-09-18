@@ -49,25 +49,26 @@ impl Config {
     }
 
     pub fn parse_pull_request_field(&self, text: &str) -> Option<u64> {
-        if text.is_empty() {
-            return None;
-        }
+        // The message parser may include trailing commit trailers in this field.
+        // Only the first non-empty line is the PR reference; do not scan trailers
+        // for a different reference if the original one is invalid.
+        let text = text.lines().map(str::trim).find(|line| !line.is_empty())?;
 
-        let regex = lazy_regex::regex!(r#"^\s*#?\s*(\d+)\s*$"#);
+        let regex = lazy_regex::regex!(r#"^\s*#?\s*([0-9]+)\s*$"#);
         let m = regex.captures(text);
         if let Some(caps) = m {
-            return Some(caps.get(1).unwrap().as_str().parse().unwrap());
+            return caps.get(1)?.as_str().parse().ok();
         }
 
         let regex = lazy_regex::regex!(
-            r#"^\s*https?://github.com/([\w\-\.]+)/([\w\-\.]+)/pull/(\d+)([/?#].*)?\s*$"#
+            r#"^\s*https?://github\.com/([\w\-\.]+)/([\w\-\.]+)/pull/([0-9]+)([/?#].*)?\s*$"#
         );
         let m = regex.captures(text);
         if let Some(caps) = m
             && self.owner == caps.get(1).unwrap().as_str()
             && self.repo == caps.get(2).unwrap().as_str()
         {
-            return Some(caps.get(3).unwrap().as_str().parse().unwrap());
+            return caps.get(3)?.as_str().parse().ok();
         }
 
         None
@@ -399,6 +400,49 @@ mod tests {
         assert_eq!(
             gh.parse_pull_request_field("https://github.com/acme/codez/pull/123#abc"),
             Some(123)
+        );
+    }
+    #[test]
+    fn test_parse_pull_request_field_with_trailers() {
+        let gh = config_factory();
+        for reference in ["123", "#123", "https://github.com/acme/codez/pull/123"] {
+            let field = format!(
+                "\n  {reference}  \r\n\r\nCo-authored-by: Someone <someone@example.com>\nSigned-off-by: Someone <someone@example.com>"
+            );
+            assert_eq!(gh.parse_pull_request_field(&field), Some(123));
+        }
+    }
+
+    #[test]
+    fn test_parse_pull_request_field_does_not_scan_past_invalid_reference() {
+        let gh = config_factory();
+        for reference in [
+            "invalid",
+            "https://github.com/other/codez/pull/123",
+            "https://github.com/acme/other/pull/123",
+            "https://githubXcom/acme/codez/pull/123",
+        ] {
+            assert_eq!(
+                gh.parse_pull_request_field(&format!("{reference}\n#456")),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_pull_request_field_out_of_range() {
+        let gh = config_factory();
+        for reference in [
+            "18446744073709551616",
+            "#18446744073709551616",
+            "https://github.com/acme/codez/pull/18446744073709551616",
+            "１２３",
+        ] {
+            assert_eq!(gh.parse_pull_request_field(reference), None);
+        }
+        assert_eq!(
+            gh.parse_pull_request_field("18446744073709551615"),
+            Some(u64::MAX)
         );
     }
 }
