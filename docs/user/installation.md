@@ -44,3 +44,15 @@ After installation, you'll need to:
    ```
 
 See the [Setup Guide](./setup.md) for detailed configuration instructions.
+
+## Certificate trust
+
+The GitHub GraphQL client trusts both bundled public certificate authorities and
+certificates from the operating system's trust store. This supports devboxes and
+corporate networks with an internal certificate authority while retaining the
+bundled public roots. TLS certificate verification remains enabled.
+
+If you see `invalid peer certificate: UnknownIssuer`, make sure your network's
+trusted CA is installed in the system trust store. On Linux, native certificate
+loading also supports `SSL_CERT_FILE` and `SSL_CERT_DIR` for an existing trusted
+CA bundle or directory.
