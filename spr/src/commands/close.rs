@@ -19,6 +19,10 @@ use crate::{
 
 #[derive(Debug, clap::Parser)]
 pub struct CloseOptions {
+    /// Skip Git pre-push hooks (hooks run by default)
+    #[clap(long)]
+    no_verify: bool,
+
     /// Close Pull Requests for commits in range from base to revision
     #[clap(long, short = 'a')]
     all: bool,
@@ -71,7 +75,7 @@ pub async fn close(
         // This makes it easier to run the code to update the local commit message
         // with all the changes that the implementation makes at the end, even if
         // the implementation encounters an error or exits early.
-        result = close_impl(jj, gh, config, prepared_commit).await;
+        result = close_impl(jj, gh, config, prepared_commit, opts.no_verify).await;
     }
 
     // This updates the commit message in the local Jujutsu repository (if it was
@@ -89,6 +93,7 @@ async fn close_impl(
     gh: &mut crate::github::GitHub,
     config: &crate::config::Config,
     prepared_commit: &mut PreparedCommit,
+    no_verify: bool,
 ) -> Result<()> {
     let pull_request_number = if let Some(number) = prepared_commit.pull_request_number {
         output("#️⃣ ", &format!("Pull Request #{}", number))?;
@@ -137,9 +142,7 @@ async fn close_impl(
     prepared_commit.message_changed = true;
 
     let mut remove_old_branch_child_process = jj
-        .git_command()
-        .arg("push")
-        .arg("--no-verify")
+        .git_push_command(no_verify)
         .arg("--delete")
         .arg("--")
         .arg(&config.remote_name)
@@ -152,9 +155,7 @@ async fn close_impl(
         None
     } else {
         Some(
-            jj.git_command()
-                .arg("push")
-                .arg("--no-verify")
+            jj.git_push_command(no_verify)
                 .arg("--delete")
                 .arg("--")
                 .arg(&config.remote_name)

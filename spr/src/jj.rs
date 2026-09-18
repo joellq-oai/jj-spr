@@ -72,6 +72,16 @@ impl Jujutsu {
         cmd
     }
 
+    /// Build a push command that honors Git hooks unless explicitly disabled.
+    pub fn git_push_command(&self, no_verify: bool) -> tokio::process::Command {
+        let mut cmd = self.git_command();
+        cmd.arg("push");
+        if no_verify {
+            cmd.arg("--no-verify");
+        }
+        cmd
+    }
+
     pub fn get_prepared_commit_for_revision(
         &self,
         config: &Config,

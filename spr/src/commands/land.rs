@@ -18,6 +18,10 @@ use crate::{
 
 #[derive(Debug, clap::Parser)]
 pub struct LandOptions {
+    /// Skip Git pre-push hooks (hooks run by default)
+    #[clap(long)]
+    no_verify: bool,
+
     /// Merge a Pull Request that was created or updated with spr diff
     /// --cherry-pick
     #[clap(long)]
@@ -267,9 +271,7 @@ pub async fn land(
     output("🛬", "Landed!")?;
 
     let mut remove_old_branch_child_process = jj
-        .git_command()
-        .arg("push")
-        .arg("--no-verify")
+        .git_push_command(opts.no_verify)
         .arg("--delete")
         .arg("--")
         .arg(&config.remote_name)
@@ -282,9 +284,7 @@ pub async fn land(
         None
     } else {
         Some(
-            jj.git_command()
-                .arg("push")
-                .arg("--no-verify")
+            jj.git_push_command(opts.no_verify)
                 .arg("--delete")
                 .arg("--")
                 .arg(&config.remote_name)

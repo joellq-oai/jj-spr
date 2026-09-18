@@ -60,6 +60,10 @@ fn select_base_decision(
 
 #[derive(Debug, clap::Parser)]
 pub struct DiffOptions {
+    /// Skip Git pre-push hooks (hooks run by default)
+    #[clap(long)]
+    no_verify: bool,
+
     /// Create/update pull requests for commits in range from base to revision
     #[clap(long, short = 'a')]
     all: bool,
@@ -758,10 +762,8 @@ async fn diff_impl(
             })
         };
     } else {
-        let mut cmd = jj.git_command();
-        cmd.arg("push")
-            .arg("--atomic")
-            .arg("--no-verify")
+        let mut cmd = jj.git_push_command(opts.no_verify);
+        cmd.arg("--atomic")
             .arg("--")
             .arg(&config.remote_name)
             .arg(format!("{}:{}", pr_commit, pull_request_branch.on_github()));
@@ -981,6 +983,7 @@ mod tests {
     #[test]
     fn test_diff_options_default_values() {
         let opts = DiffOptions {
+            no_verify: false,
             all: false,
             update_message: false,
             draft: false,
@@ -1003,6 +1006,7 @@ mod tests {
     #[test]
     fn test_diff_options_with_base() {
         let opts = DiffOptions {
+            no_verify: false,
             all: true,
             update_message: false,
             draft: false,
@@ -1030,6 +1034,7 @@ mod tests {
     fn test_base_option_parsing() {
         // Test that the base option can be parsed correctly
         let opts_with_base = DiffOptions {
+            no_verify: false,
             all: true,
             update_message: false,
             draft: false,
@@ -1045,6 +1050,7 @@ mod tests {
         assert!(opts_with_base.all);
 
         let opts_with_trunk = DiffOptions {
+            no_verify: false,
             all: true,
             update_message: false,
             draft: false,
@@ -1062,6 +1068,7 @@ mod tests {
     #[test]
     fn test_all_flag_behavior() {
         let opts_with_all = DiffOptions {
+            no_verify: false,
             all: true,
             update_message: false,
             draft: false,
@@ -1082,6 +1089,7 @@ mod tests {
     fn test_diff_options_combinations() {
         // Test various valid combinations of options
         let opts = DiffOptions {
+            no_verify: false,
             all: true,
             update_message: true,
             draft: true,
@@ -1104,6 +1112,7 @@ mod tests {
     #[test]
     fn test_diff_options_dry_run_flag() {
         let opts = DiffOptions {
+            no_verify: false,
             all: false,
             update_message: false,
             draft: false,

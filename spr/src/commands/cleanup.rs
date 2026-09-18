@@ -12,6 +12,10 @@ use crate::{error::Result, output::output};
 
 #[derive(Debug, clap::Parser)]
 pub struct CleanupOptions {
+    /// Skip Git pre-push hooks (hooks run by default)
+    #[clap(long)]
+    no_verify: bool,
+
     /// Actually delete the orphan branches (default is list-only)
     #[clap(long)]
     confirm: bool,
@@ -100,9 +104,8 @@ pub async fn cleanup(
     output("🧹", "Deleting orphan branches...")?;
 
     for branch in &orphan_branches {
-        let result = tokio::process::Command::new("git")
-            .arg("push")
-            .arg("--no-verify")
+        let result = jj
+            .git_push_command(opts.no_verify)
             .arg("--delete")
             .arg("--")
             .arg(&config.remote_name)
