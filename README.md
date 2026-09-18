@@ -36,7 +36,7 @@ Jujutsu encourages amending changes. GitHub's review UI breaks with force pushes
 ```bash
 git clone https://github.com/LucioFranco/jj-spr.git
 cd jj-spr
-cargo install --locked --path spr
+cargo install --path spr
 ```
 
 This installs the `jj-spr` binary to your `~/.cargo/bin` directory.

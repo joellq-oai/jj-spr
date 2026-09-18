@@ -38,7 +38,7 @@ Here's a complete example to get you started quickly:
 # 1. Install jj-spr (after installing Rust from https://rustup.rs)
 git clone https://github.com/LucioFranco/jj-spr.git
 cd jj-spr
-cargo install --locked --path spr
+cargo install --path spr
 
 # 2. Set up the Jujutsu alias
 jj config set --user aliases.spr '["util", "exec", "--", "jj-spr"]'
